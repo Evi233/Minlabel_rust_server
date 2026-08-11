@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Multipart, Path, Query, State},
-    http::{header, StatusCode},
+    extract::{Multipart, Path, State},
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::get,
     Json, Router,
 };
 use serde::Deserialize;
@@ -112,14 +112,13 @@ async fn download_audio(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let mime = mime_for(&file.name);
+    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.name))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, mime),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", file.name),
-            ),
+            (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+            (header::CONTENT_DISPOSITION, disposition),
         ],
         bytes,
     )
