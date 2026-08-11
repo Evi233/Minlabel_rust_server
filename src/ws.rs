@@ -34,10 +34,10 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
 
-    state.clients.lock().unwrap().insert(user.clone(), tx);
+    state.clients.lock().unwrap().insert(user.clone(), tx.clone());
 
     let mut broadcast_rx = state.tx.subscribe();
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 msg = rx.recv() => {
