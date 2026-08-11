@@ -1,7 +1,7 @@
 pub mod db;
 pub mod http;
-pub mod ws;
 pub mod state;
+pub mod ws;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -39,6 +39,8 @@ async fn main() {
         .expect("invalid MINLABEL_ADDR");
 
     tracing::info!("minlabel server listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind failed");
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("bind failed");
     axum::serve(listener, app).await.expect("server error");
 }

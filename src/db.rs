@@ -146,11 +146,7 @@ impl Db {
         rows.next().transpose()
     }
 
-    pub fn upsert_annotation(
-        &self,
-        a: &Annotation,
-        user: &str,
-    ) -> Result<(), rusqlite::Error> {
+    pub fn upsert_annotation(&self, a: &Annotation, user: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO annotations (file_id, is_check, lab, lab_without_tone, raw_text, annotated_by, updated_at)

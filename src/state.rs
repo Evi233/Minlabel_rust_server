@@ -31,7 +31,10 @@ impl AppState {
     }
 
     pub fn claim_file(&self, file_id: i64, user: &str) -> Result<bool, String> {
-        let mut claims = self.claims.lock().map_err(|_| "lock poisoned".to_string())?;
+        let mut claims = self
+            .claims
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
         if let Some(owner) = claims.get(&file_id) {
             if owner != user {
                 return Ok(false);

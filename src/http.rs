@@ -15,12 +15,18 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/files", get(list_files).post(upload_file))
         .route("/api/files/{id}/audio", get(download_audio))
-        .route("/api/annotations/{id}", get(get_annotation).put(save_annotation))
+        .route(
+            "/api/annotations/{id}",
+            get(get_annotation).put(save_annotation),
+        )
         .route("/api/progress", get(get_progress))
 }
 
 async fn list_files(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
-    let files = state.db.list_files().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let files = state
+        .db
+        .list_files()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let files: Vec<serde_json::Value> = files
         .into_iter()
         .map(|f| {
@@ -45,11 +51,21 @@ async fn upload_file(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let mut name: Option<String> = None;
     let mut data: Option<Vec<u8>> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
         match field.name() {
             Some("file") => {
                 name = field.file_name().map(|s| s.to_string());
-                data = Some(field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?.to_vec());
+                data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|_| StatusCode::BAD_REQUEST)?
+                        .to_vec(),
+                );
             }
             _ => {}
         }
@@ -73,7 +89,10 @@ async fn upload_file(
         .insert_file(&name, &stored, None)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (done, total) = state.db.progress().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (done, total) = state
+        .db
+        .progress()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     state.broadcast(&json!({ "type": "progress", "done": done, "total": total }).to_string());
 
     Ok(Json(json!({ "id": file_id, "name": name })))
@@ -83,16 +102,24 @@ async fn download_audio(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Response, StatusCode> {
-    let file = state.db.get_file(id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let file = state
+        .db
+        .get_file(id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file = file.ok_or(StatusCode::NOT_FOUND)?;
     let full_path = state.audio_dir.join(&file.path);
-    let bytes = tokio::fs::read(&full_path).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let bytes = tokio::fs::read(&full_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let mime = mime_for(&file.name);
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, mime),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", file.name)),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", file.name),
+            ),
         ],
         bytes,
     )
@@ -103,7 +130,11 @@ async fn get_annotation(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.db.get_annotation(id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+    match state
+        .db
+        .get_annotation(id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         Some(a) => Ok(Json(json!({
             "file_id": a.file_id,
             "is_check": a.is_check,
@@ -139,7 +170,12 @@ async fn save_annotation(
     Path(id): Path<i64>,
     Json(req): Json<SaveAnnotationReq>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if state.db.get_file(id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_none() {
+    if state
+        .db
+        .get_file(id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .is_none()
+    {
         return Err(StatusCode::NOT_FOUND);
     }
     let annotation = Annotation {
@@ -161,25 +197,36 @@ async fn save_annotation(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     state.release_file(id, &req.user);
 
-    let (done, total) = state.db.progress().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    state.broadcast(&json!({
-        "type": "annotated",
-        "user": req.user,
-        "file_id": id,
-        "data": {
-            "is_check": annotation.is_check,
-            "lab": annotation.lab,
-            "lab_without_tone": annotation.lab_without_tone,
-            "raw_text": annotation.raw_text,
-        },
-    }).to_string());
+    let (done, total) = state
+        .db
+        .progress()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.broadcast(
+        &json!({
+            "type": "annotated",
+            "user": req.user,
+            "file_id": id,
+            "data": {
+                "is_check": annotation.is_check,
+                "lab": annotation.lab,
+                "lab_without_tone": annotation.lab_without_tone,
+                "raw_text": annotation.raw_text,
+            },
+        })
+        .to_string(),
+    );
     state.broadcast(&json!({ "type": "progress", "done": done, "total": total }).to_string());
 
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_progress(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
-    let (done, total) = state.db.progress().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn get_progress(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let (done, total) = state
+        .db
+        .progress()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "done": done, "total": total })))
 }
 
