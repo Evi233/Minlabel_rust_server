@@ -18,12 +18,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db_path: &std::path::Path, audio_dir: &PathBuf) -> Result<Self, rusqlite::Error> {
+    pub fn new(db_path: &std::path::Path, audio_dir: &std::path::Path) -> Result<Self, rusqlite::Error> {
         let db = Arc::new(Db::open(db_path)?);
         let (tx, _) = broadcast::channel(256);
         Ok(Self {
             db,
-            audio_dir: audio_dir.clone(),
+            audio_dir: audio_dir.to_path_buf(),
             claims: Arc::new(Mutex::new(std::collections::HashMap::new())),
             clients: Arc::new(Mutex::new(std::collections::HashMap::new())),
             tx,

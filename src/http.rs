@@ -56,18 +56,15 @@ async fn upload_file(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?
     {
-        match field.name() {
-            Some("file") => {
-                name = field.file_name().map(|s| s.to_string());
-                data = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|_| StatusCode::BAD_REQUEST)?
-                        .to_vec(),
-                );
-            }
-            _ => {}
+        if let Some("file") = field.name() {
+            name = field.file_name().map(|s| s.to_string());
+            data = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .to_vec(),
+            );
         }
     }
     let name = name.ok_or(StatusCode::BAD_REQUEST)?;
