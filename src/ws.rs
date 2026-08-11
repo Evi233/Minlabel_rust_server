@@ -47,7 +47,7 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
                 msg = rx.recv() => {
                     match msg {
                         Some(text) => {
-                            if sender.send(Message::Text(text.into())).await.is_err() {
+                            if sender.send(Message::Text(text)).await.is_err() {
                                 break;
                             }
                         }
@@ -57,7 +57,7 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
                 msg = broadcast_rx.recv() => {
                     match msg {
                         Ok(text) => {
-                            if sender.send(Message::Text(text.into())).await.is_err() {
+                            if sender.send(Message::Text(text)).await.is_err() {
                                 break;
                             }
                         }

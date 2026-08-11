@@ -45,7 +45,7 @@ impl AppState {
     }
 
     pub fn release_file(&self, file_id: i64, user: &str) -> bool {
-        let mut claims = self.claims.lock().map_err(|_| return false).unwrap();
+        let mut claims = self.claims.lock().map_err(|_| false).unwrap();
         if claims.get(&file_id).map(|o| o == user).unwrap_or(false) {
             claims.remove(&file_id);
             true
