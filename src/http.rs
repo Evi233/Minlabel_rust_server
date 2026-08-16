@@ -17,16 +17,13 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/rooms", post(create_room))
         .route(
-            "/api/rooms/{room}/files",
+            "/api/rooms/:room/files",
             get(list_room_files).post(register_files),
         )
+        .route("/api/rooms/:room/files/:id/audio", post(upload_room_audio))
+        .route("/api/files/:id/audio", get(download_audio))
         .route(
-            "/api/rooms/{room}/files/{id}/audio",
-            post(upload_room_audio),
-        )
-        .route("/api/files/{id}/audio", get(download_audio))
-        .route(
-            "/api/annotations/{id}",
+            "/api/annotations/:id",
             get(get_annotation).put(save_annotation),
         )
         .route("/api/progress", get(get_progress))

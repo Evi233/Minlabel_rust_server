@@ -275,7 +275,7 @@ async fn rooms_are_isolated() {
 
     let reg_a: Value = post(
         &client,
-        &format!("{http}/api/rooms/{}/files", room_a["id"]),
+        &format!("{http}/api/rooms/{}/files", room_a["id"].as_str().unwrap()),
         json!({ "user": "a", "files": [{ "name": "a.wav", "size": 1 }] }),
     )
     .await;
