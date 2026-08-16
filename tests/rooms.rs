@@ -33,7 +33,7 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 type WsStream =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<std::net::TcpStream>>;
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect_ws(addr: SocketAddr, user: &str, room: &str) -> WsStream {
     let url = format!("ws://{addr}/ws?user={user}&room={room}");
