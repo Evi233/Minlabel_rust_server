@@ -33,7 +33,7 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 type WsStream =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<std::net::TcpStream>>;
 
 async fn connect_ws(addr: SocketAddr, user: &str, room: &str) -> WsStream {
     let url = format!("ws://{addr}/ws?user={user}&room={room}");
@@ -213,7 +213,6 @@ async fn offline_owner_is_reported() {
     let state = test_state("offline");
     let addr = spawn_server(state).await;
     let http = format!("http://{addr}");
-    let client = reqwest::blocking::Client::new();
 
     let room: Value = post(&format!("{http}/api/rooms"), json!({ "user": "alice" }));
     let code = room["id"].as_str().unwrap().to_string();
