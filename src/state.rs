@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,9 +13,11 @@ pub type WsSender = Sender<String>;
 pub struct AppState {
     pub db: Arc<Db>,
     pub audio_dir: PathBuf,
-    pub claims: Arc<Mutex<std::collections::HashMap<i64, String>>>,
-    pub clients: Arc<Mutex<std::collections::HashMap<String, WsSender>>>,
-    pub tx: broadcast::Sender<String>,
+    pub claims: Arc<Mutex<HashMap<i64, String>>>,
+    /// (room, user) -> websocket message sender
+    pub clients: Arc<Mutex<HashMap<(String, String), WsSender>>>,
+    /// One broadcast channel per room, so messages never leak across rooms.
+    pub room_tx: Arc<Mutex<HashMap<String, broadcast::Sender<String>>>>,
 }
 
 impl AppState {
@@ -23,17 +26,32 @@ impl AppState {
         audio_dir: &std::path::Path,
     ) -> Result<Self, rusqlite::Error> {
         let db = Arc::new(Db::open(db_path)?);
-        let (tx, _) = broadcast::channel(256);
         Ok(Self {
             db,
             audio_dir: audio_dir.to_path_buf(),
-            claims: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            clients: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            tx,
+            claims: Arc::new(Mutex::new(HashMap::new())),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            room_tx: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    pub fn claim_file(&self, file_id: i64, user: &str) -> Result<bool, String> {
+    pub fn room_channel(&self, room: &str) -> broadcast::Sender<String> {
+        self.room_tx
+            .lock()
+            .unwrap()
+            .entry(room.to_string())
+            .or_insert_with(|| broadcast::channel(256).0)
+            .clone()
+    }
+
+    pub fn claim_file(&self, room: &str, file_id: i64, user: &str) -> Result<bool, String> {
+        if !self
+            .db
+            .file_in_room(file_id, room)
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
         let mut claims = self
             .claims
             .lock()
@@ -74,7 +92,7 @@ impl AppState {
         self.claims.lock().unwrap().get(&file_id).cloned()
     }
 
-    pub fn broadcast(&self, msg: &str) {
-        let _ = self.tx.send(msg.to_string());
+    pub fn broadcast_to(&self, room: &str, msg: &str) {
+        let _ = self.room_channel(room).send(msg.to_string());
     }
 }

@@ -2,7 +2,7 @@ use axum::{
     extract::{Multipart, Path, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -11,9 +11,19 @@ use serde_json::json;
 use crate::db::Annotation;
 use crate::state::AppState;
 
+const ROOM_CODE_CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/files", get(list_files).post(upload_file))
+        .route("/api/rooms", post(create_room))
+        .route(
+            "/api/rooms/{room}/files",
+            get(list_room_files).post(register_files),
+        )
+        .route(
+            "/api/rooms/{room}/files/{id}/audio",
+            post(upload_room_audio),
+        )
         .route("/api/files/{id}/audio", get(download_audio))
         .route(
             "/api/annotations/{id}",
@@ -22,10 +32,109 @@ pub fn router() -> Router<AppState> {
         .route("/api/progress", get(get_progress))
 }
 
-async fn list_files(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
+fn gen_room_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..6)
+        .map(|_| {
+            let i = rng.gen_range(0..ROOM_CODE_CHARS.len());
+            ROOM_CODE_CHARS[i] as char
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct CreateRoomReq {
+    user: String,
+}
+
+async fn create_room(
+    State(state): State<AppState>,
+    Json(req): Json<CreateRoomReq>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let user = req.user.trim();
+    if user.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut code = gen_room_code();
+    for _ in 0..10 {
+        if state
+            .db
+            .room_exists(&code)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            code = gen_room_code();
+        } else {
+            break;
+        }
+    }
+    state
+        .db
+        .create_room(&code, user)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "id": code })))
+}
+
+#[derive(Deserialize)]
+struct RegisterFilesReq {
+    user: String,
+    files: Vec<RegisteredFile>,
+}
+
+#[derive(Deserialize)]
+struct RegisteredFile {
+    name: String,
+    size: i64,
+}
+
+/// Register file metadata (name/size) without uploading the audio bytes.
+/// The owner uploads each file later, on demand, when a room member asks for it.
+async fn register_files(
+    State(state): State<AppState>,
+    Path(room): Path<String>,
+    Json(req): Json<RegisterFilesReq>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !state
+        .db
+        .room_exists(&room)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let user = req.user.trim();
+    if user.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut ids = Vec::new();
+    for f in &req.files {
+        let name = f.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let id = state
+            .db
+            .insert_file(&room, user, name, f.size, "", None)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        ids.push(json!({ "id": id, "name": name, "size": f.size }));
+    }
+    let (done, total) = state
+        .db
+        .progress_for_room(&room)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.broadcast_to(
+        &room,
+        &json!({ "type": "progress", "done": done, "total": total }).to_string(),
+    );
+    Ok(Json(json!({ "files": ids })))
+}
+
+async fn list_room_files(
+    State(state): State<AppState>,
+    Path(room): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     let files = state
         .db
-        .list_files()
+        .list_files_in_room(&room)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let files: Vec<serde_json::Value> = files
         .into_iter()
@@ -34,6 +143,9 @@ async fn list_files(State(state): State<AppState>) -> Result<Json<serde_json::Va
             json!({
                 "id": f.id,
                 "name": f.name,
+                "size": f.size,
+                "uploaded": f.uploaded,
+                "owner": f.owner,
                 "duration": f.duration,
                 "status": f.status,
                 "annotated_by": f.annotated_by,
@@ -45,54 +157,75 @@ async fn list_files(State(state): State<AppState>) -> Result<Json<serde_json::Va
     Ok(Json(json!({ "files": files })))
 }
 
-async fn upload_file(
+/// The owning client uploads a file's audio bytes after another room member
+/// requested it. Returns 409 if the file was already uploaded.
+async fn upload_room_audio(
     State(state): State<AppState>,
+    Path((room, id)): Path<(String, i64)>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut name: Option<String> = None;
+    let mut user: Option<String> = None;
     let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?
     {
-        if let Some("file") = field.name() {
-            name = field.file_name().map(|s| s.to_string());
-            data = Some(
-                field
-                    .bytes()
-                    .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
-                    .to_vec(),
-            );
+        match field.name() {
+            Some("user") => {
+                user = Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?);
+            }
+            Some("file") => {
+                data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|_| StatusCode::BAD_REQUEST)?
+                        .to_vec(),
+                );
+            }
+            _ => {}
         }
     }
-    let name = name.ok_or(StatusCode::BAD_REQUEST)?;
+    let user = user.ok_or(StatusCode::BAD_REQUEST)?;
     let data = data.ok_or(StatusCode::BAD_REQUEST)?;
 
-    let id = uuid::Uuid::new_v4().to_string();
-    let ext = std::path::Path::new(&name)
+    let file = state
+        .db
+        .get_file(id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if file.room_id != room {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if file.owner.as_deref() != Some(user.as_str()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if file.uploaded {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let ext = std::path::Path::new(&file.name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin");
-    let stored = format!("{id}.{ext}");
+    let stored = format!("{uuid}.{ext}");
     let full_path = state.audio_dir.join(&stored);
     tokio::fs::write(&full_path, &data)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let file_id = state
+    state
         .db
-        .insert_file(&name, &stored, None)
+        .mark_uploaded(id, &stored)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let (done, total) = state
-        .db
-        .progress()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    state.broadcast(&json!({ "type": "progress", "done": done, "total": total }).to_string());
-
-    Ok(Json(json!({ "id": file_id, "name": name })))
+    state.broadcast_to(
+        &room,
+        &json!({ "type": "file_uploaded", "file_id": id }).to_string(),
+    );
+    Ok(Json(json!({ "id": id })))
 }
 
 async fn download_audio(
@@ -104,6 +237,9 @@ async fn download_audio(
         .get_file(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file = file.ok_or(StatusCode::NOT_FOUND)?;
+    if !file.uploaded {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let full_path = state.audio_dir.join(&file.path);
     let bytes = tokio::fs::read(&full_path)
         .await
@@ -166,14 +302,11 @@ async fn save_annotation(
     Path(id): Path<i64>,
     Json(req): Json<SaveAnnotationReq>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if state
+    let file = state
         .db
         .get_file(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .is_none()
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
+        .ok_or(StatusCode::NOT_FOUND)?;
     let annotation = Annotation {
         file_id: id,
         is_check: req.is_check,
@@ -195,9 +328,10 @@ async fn save_annotation(
 
     let (done, total) = state
         .db
-        .progress()
+        .progress_for_room(&file.room_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    state.broadcast(
+    state.broadcast_to(
+        &file.room_id,
         &json!({
             "type": "annotated",
             "user": req.user,
@@ -211,7 +345,10 @@ async fn save_annotation(
         })
         .to_string(),
     );
-    state.broadcast(&json!({ "type": "progress", "done": done, "total": total }).to_string());
+    state.broadcast_to(
+        &file.room_id,
+        &json!({ "type": "progress", "done": done, "total": total }).to_string(),
+    );
 
     Ok(Json(json!({ "ok": true })))
 }

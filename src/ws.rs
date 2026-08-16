@@ -3,6 +3,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
     Router,
@@ -20,17 +21,30 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct WsQuery {
     user: String,
+    room: String,
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, q.user, state))
+) -> Result<impl IntoResponse, StatusCode> {
+    if q.user.trim().is_empty() || q.room.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !state
+        .db
+        .room_exists(&q.room)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let user = q.user.trim().to_string();
+    let room = q.room.trim().to_string();
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, room, user, state)))
 }
 
-async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
+async fn handle_socket(socket: WebSocket, room: String, user: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
 
@@ -38,9 +52,9 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
         .clients
         .lock()
         .unwrap()
-        .insert(user.clone(), tx.clone());
+        .insert((room.clone(), user.clone()), tx.clone());
 
-    let mut broadcast_rx = state.tx.subscribe();
+    let mut broadcast_rx = state.room_channel(&room).subscribe();
     let send_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -68,7 +82,7 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
         }
     });
 
-    let (done, total) = state.db.progress().unwrap_or((0, 0));
+    let (done, total) = state.db.progress_for_room(&room).unwrap_or((0, 0));
     let _ = tx
         .send(json!({ "type": "progress", "done": done, "total": total }).to_string())
         .await;
@@ -76,7 +90,7 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
     while let Some(Ok(msg)) = receiver.next().await {
         match msg {
             Message::Text(text) => {
-                handle_client_message(&state, &user, &text, &tx).await;
+                handle_client_message(&state, &room, &user, &text, &tx).await;
             }
             Message::Close(_) => break,
             Message::Ping(_) | Message::Pong(_) => {}
@@ -86,14 +100,18 @@ async fn handle_socket(socket: WebSocket, user: String, state: AppState) {
 
     let released = state.release_all(&user);
     for id in released {
-        state.broadcast(&json!({ "type": "release", "user": user, "file_id": id }).to_string());
+        state.broadcast_to(
+            &room,
+            &json!({ "type": "release", "user": user, "file_id": id }).to_string(),
+        );
     }
-    state.clients.lock().unwrap().remove(&user);
+    state.clients.lock().unwrap().remove(&(room, user));
     send_task.abort();
 }
 
 async fn handle_client_message(
     state: &AppState,
+    room: &str,
     user: &str,
     text: &str,
     tx: &tokio::sync::mpsc::Sender<String>,
@@ -112,9 +130,10 @@ async fn handle_client_message(
             let Some(file_id) = msg.get("file_id").and_then(|v| v.as_i64()) else {
                 return;
             };
-            match state.claim_file(file_id, user) {
+            match state.claim_file(room, file_id, user) {
                 Ok(true) => {
-                    state.broadcast(
+                    state.broadcast_to(
+                        room,
                         &json!({ "type": "presence", "user": user, "file_id": file_id })
                             .to_string(),
                     );
@@ -136,10 +155,17 @@ async fn handle_client_message(
                 return;
             };
             if state.release_file(file_id, user) {
-                state.broadcast(
+                state.broadcast_to(
+                    room,
                     &json!({ "type": "release", "user": user, "file_id": file_id }).to_string(),
                 );
             }
+        }
+        "request_file" => {
+            let Some(file_id) = msg.get("file_id").and_then(|v| v.as_i64()) else {
+                return;
+            };
+            handle_file_request(state, room, user, file_id, tx).await;
         }
         "annotate" => {
             let Some(file_id) = msg.get("file_id").and_then(|v| v.as_i64()) else {
@@ -178,8 +204,9 @@ async fn handle_client_message(
             let _ = state.db.set_file_status(file_id, "done", Some(user));
             state.release_file(file_id, user);
 
-            let (done, total) = state.db.progress().unwrap_or((0, 0));
-            state.broadcast(
+            let (done, total) = state.db.progress_for_room(room).unwrap_or((0, 0));
+            state.broadcast_to(
+                room,
                 &json!({
                     "type": "annotated",
                     "user": user,
@@ -193,10 +220,63 @@ async fn handle_client_message(
                 })
                 .to_string(),
             );
-            state.broadcast(
+            state.broadcast_to(
+                room,
                 &json!({ "type": "progress", "done": done, "total": total }).to_string(),
             );
         }
         _ => {}
+    }
+}
+
+/// A room member asks for a file's audio. If the bytes are already on the
+/// server the requester can download right away; otherwise the owning client
+/// is told to upload them on demand.
+async fn handle_file_request(
+    state: &AppState,
+    room: &str,
+    user: &str,
+    file_id: i64,
+    tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    let Ok(Some(file)) = state.db.get_file(file_id) else {
+        return;
+    };
+    if file.room_id != room {
+        return;
+    }
+    if file.uploaded {
+        let _ = tx
+            .send(json!({ "type": "file_ready", "file_id": file_id }).to_string())
+            .await;
+        return;
+    }
+    let Some(owner) = file.owner else {
+        let _ = tx
+            .send(json!({ "type": "file_unavailable", "file_id": file_id }).to_string())
+            .await;
+        return;
+    };
+    if owner == user {
+        // The requester owns this file; nothing to relay.
+        return;
+    }
+    let sender = state
+        .clients
+        .lock()
+        .unwrap()
+        .get(&(room.to_string(), owner))
+        .cloned();
+    match sender {
+        Some(s) => {
+            let _ = s
+                .send(json!({ "type": "file_requested", "file_id": file_id }).to_string())
+                .await;
+        }
+        None => {
+            let _ = tx
+                .send(json!({ "type": "file_unavailable", "file_id": file_id }).to_string())
+                .await;
+        }
     }
 }

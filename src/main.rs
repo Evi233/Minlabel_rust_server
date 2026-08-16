@@ -1,13 +1,9 @@
-pub mod db;
-pub mod http;
-pub mod state;
-pub mod ws;
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::Router;
-use state::AppState;
+use minlabel_server::state::AppState;
+use minlabel_server::{http, ws};
 use tower_http::trace::TraceLayer;
 
 #[tokio::main]
