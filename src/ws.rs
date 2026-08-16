@@ -246,12 +246,14 @@ async fn handle_file_request(
         return;
     }
     if file.uploaded {
+        tracing::info!("room {room}: {user} requested file {file_id} (already uploaded)");
         let _ = tx
             .send(json!({ "type": "file_ready", "file_id": file_id }).to_string())
             .await;
         return;
     }
     let Some(owner) = file.owner else {
+        tracing::info!("room {room}: {user} requested file {file_id} (no owner)");
         let _ = tx
             .send(json!({ "type": "file_unavailable", "file_id": file_id }).to_string())
             .await;
@@ -259,6 +261,7 @@ async fn handle_file_request(
     };
     if owner == user {
         // The requester owns this file; nothing to relay.
+        tracing::info!("room {room}: {user} requested own file {file_id}");
         return;
     }
     let sender = state
@@ -269,11 +272,13 @@ async fn handle_file_request(
         .cloned();
     match sender {
         Some(s) => {
+            tracing::info!("room {room}: relaying file {file_id} request to owner {owner}");
             let _ = s
                 .send(json!({ "type": "file_requested", "file_id": file_id }).to_string())
                 .await;
         }
         None => {
+            tracing::info!("room {room}: owner {owner} of file {file_id} is offline");
             let _ = tx
                 .send(json!({ "type": "file_unavailable", "file_id": file_id }).to_string())
                 .await;
