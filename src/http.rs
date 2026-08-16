@@ -22,6 +22,8 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/rooms/:room/files/:id/audio", post(upload_room_audio))
         .route("/api/files/:id/audio", get(download_audio))
+        .route("/api/files/:id/lab", get(download_sidecar("lab")))
+        .route("/api/files/:id/json", get(download_sidecar("json")))
         .route(
             "/api/annotations/:id",
             get(get_annotation).put(save_annotation),
@@ -161,7 +163,8 @@ async fn list_room_files(
 }
 
 /// The owning client uploads a file's audio bytes after another room member
-/// requested it. Returns 409 if the file was already uploaded.
+/// requested it. Returns 409 if the file was already uploaded. The optional
+/// `lab` / `json` text fields carry the matching annotation sidecar files.
 async fn upload_room_audio(
     State(state): State<AppState>,
     Path((room, id)): Path<(String, i64)>,
@@ -169,6 +172,8 @@ async fn upload_room_audio(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let mut user: Option<String> = None;
     let mut data: Option<Vec<u8>> = None;
+    let mut lab: Option<String> = None;
+    let mut json: Option<String> = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -186,6 +191,12 @@ async fn upload_room_audio(
                         .map_err(|_| StatusCode::BAD_REQUEST)?
                         .to_vec(),
                 );
+            }
+            Some("lab") => {
+                lab = Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?);
+            }
+            Some("json") => {
+                json = Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?);
             }
             _ => {}
         }
@@ -218,6 +229,16 @@ async fn upload_room_audio(
     tokio::fs::write(&full_path, &data)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(lab_text) = lab {
+        tokio::fs::write(state.audio_dir.join(format!("{uuid}.lab")), lab_text)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(json_text) = json {
+        tokio::fs::write(state.audio_dir.join(format!("{uuid}.json")), json_text)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
 
     state
         .db
@@ -259,6 +280,33 @@ async fn download_audio(
         bytes,
     )
         .into_response())
+}
+
+/// Download an annotation sidecar (.lab / .json) uploaded next to the audio.
+/// Returns 404 if the file was not uploaded or has no sidecar.
+fn download_sidecar(ext: &'static str) -> axum::routing::MethodRouter<AppState> {
+    axum::routing::get(
+        move |State(state): State<AppState>, Path(id): Path<i64>| async move {
+            let file = state
+                .db
+                .get_file(id)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .ok_or(StatusCode::NOT_FOUND)?;
+            if !file.uploaded {
+                return Err(StatusCode::NOT_FOUND);
+            }
+            let stored = std::path::Path::new(&file.path);
+            let stem = stored
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let sidecar_path = state.audio_dir.join(format!("{stem}.{ext}"));
+            let bytes = tokio::fs::read(&sidecar_path)
+                .await
+                .map_err(|_| StatusCode::NOT_FOUND)?;
+            Ok::<_, StatusCode>((StatusCode::OK, bytes))
+        },
+    )
 }
 
 async fn get_annotation(

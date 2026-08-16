@@ -140,12 +140,16 @@ async fn full_room_flow() {
     let req = wait_for_msg(&mut alice_ws, |m| m["type"] == "file_requested").await;
     assert_eq!(req["file_id"], a_id);
 
-    // --- Alice uploads the bytes on demand ---
+    // --- Alice uploads the bytes on demand, with lab/json sidecars ---
     let audio: Vec<u8> = b"RIFF".to_vec();
-    let form = reqwest::multipart::Form::new().text("user", "alice").part(
-        "file",
-        reqwest::multipart::Part::bytes(audio.clone()).file_name("a.wav"),
-    );
+    let form = reqwest::multipart::Form::new()
+        .text("user", "alice")
+        .text("lab", "ni hao")
+        .text("json", "{\"lab\":\"ni hao\"}")
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(audio.clone()).file_name("a.wav"),
+        );
     let up: Value = client
         .post(format!("{http}/api/rooms/{code}/files/{a_id}/audio"))
         .multipart(form)
@@ -166,6 +170,20 @@ async fn full_room_flow() {
         .await
         .unwrap();
     assert_eq!(down.bytes().await.unwrap().as_ref(), audio.as_slice());
+
+    // --- Sidecars uploaded with the audio are downloadable ---
+    let lab = client
+        .get(format!("{http}/api/files/{a_id}/lab"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lab.text().await.unwrap(), "ni hao");
+    let json = client
+        .get(format!("{http}/api/files/{a_id}/json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json.text().await.unwrap(), "{\"lab\":\"ni hao\"}");
 
     // --- Re-requesting the same file is answered directly (file_ready) ---
     bob_ws
