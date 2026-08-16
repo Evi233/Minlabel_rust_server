@@ -268,7 +268,7 @@ async fn handle_file_request(
         .clients
         .lock()
         .unwrap()
-        .get(&(room.to_string(), owner))
+        .get(&(room.to_string(), owner.clone()))
         .cloned();
     match sender {
         Some(s) => {
