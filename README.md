@@ -24,8 +24,11 @@ cargo run --release
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `MINLABEL_ADDR` | `0.0.0.0:8080` | 监听地址 |
+| `MINLABEL_ADDR` | `0.0.0.0:8080` | 监听地址（默认所有网卡，其他机器才能连） |
 | `MINLABEL_DATA_DIR` | `data` | 数据目录（SQLite + 音频文件） |
+
+> **Windows 防火墙**：其他机器连不上时，先确认服务器监听 `0.0.0.0`（`netstat -ano | findstr 8080`），再以管理员运行添加入站规则：
+> `netsh advfirewall firewall add rule name="minlabel-server" dir=in action=allow protocol=TCP localport=8080`
 
 ## HTTP API
 
