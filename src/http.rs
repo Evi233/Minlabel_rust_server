@@ -112,7 +112,13 @@ async fn register_files(
             .db
             .insert_file(&room, user, name, f.size, "", None)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        ids.push(json!({ "id": id, "name": name, "size": f.size }));
+        ids.push(json!({
+            "id": id,
+            "name": name,
+            "size": f.size,
+            "uploaded": false,
+            "owner": user,
+        }));
     }
     let (done, total) = state
         .db

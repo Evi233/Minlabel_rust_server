@@ -106,6 +106,10 @@ async fn full_room_flow() {
     .await;
     let files = reg["files"].as_array().unwrap();
     assert_eq!(files.len(), 2);
+    // The register response must include the owner so the creator's client
+    // can recognize files it registered itself.
+    assert_eq!(files[0]["owner"], "alice");
+    assert_eq!(files[0]["uploaded"], false);
     let a_id = files[0]["id"].as_i64().unwrap();
     let b_id = files[1]["id"].as_i64().unwrap();
 
